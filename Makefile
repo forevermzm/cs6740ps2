@@ -10,18 +10,12 @@ JFLAGS = -g
 # typing 'make' will invoke the first target entry in the makefile 
 # (the default one in this case)
 #
-default: Fcrypt.class Encryptor.class Decryptor.class
+default: Fcrypt.class
 
 # this target entry builds the Client.class
 #
 Fcrypt.class: Fcrypt.java
 		$(JCC) $(JFLAGS) Fcrypt.java
-
-Encryptor.class: Fcrypt.java
-		$(JCC) $(JFLAGS) Fcrypt.java
-
-Decryptor.class: Fcrypt.java
-		$(JCC) $(JFLAGS) Fcrypt.java		
 
 # To start over from scratch, type 'make clean'.  
 # Removes all .class files, so that the next make rebuilds them
