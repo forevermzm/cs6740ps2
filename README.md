@@ -1,0 +1,5 @@
+This is ps2 for cs6740.
+
+DO NOT COPY ANY FILE FROM THIS REPOSITORY!!
+
+IF YOU HAVE ANY QUESTIONS, CONTACT forevermzm00@gmail.com
