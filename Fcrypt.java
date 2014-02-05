@@ -103,6 +103,7 @@ class Encryptor extends Fcrypt {
     private SecretKeySpec aeskeySpec;
     private File aesKeyFile = null;
     private File contentsFile = null;
+    private File signatureFile = null;
     private File fileToBeEncrypt = null;
     private File fileEncrypted = null;
     private File publicKeyFile = null;
@@ -116,6 +117,7 @@ class Encryptor extends Fcrypt {
         this.fileEncrypted = fileEncrypted;
         this.aesKeyFile = new File("AES_KEY");
         this.contentsFile = new File("CONTENTS");
+        this.signatureFile = new File("SIGNATURE");
     }
 
     /**
@@ -153,12 +155,36 @@ class Encryptor extends Fcrypt {
         }
     }
 
+    void writeSignature(byte[] md5, File privateKeyFile, File out) throws FileNotFoundException, IOException, GeneralSecurityException {
+        // read private key to be used to decrypt the AES key
+        byte[] encodedKey = new byte[(int)privateKeyFile.length()];
+        new FileInputStream(privateKeyFile).read(encodedKey);
+
+        // create private key
+        PKCS8EncodedKeySpec privateKeySpec = new PKCS8EncodedKeySpec(encodedKey);
+        KeyFactory kf = KeyFactory.getInstance("RSA");
+        PrivateKey pk = kf.generatePrivate(privateKeySpec);
+
+        Signature mySign = Signature.getInstance("MD5withRSA");
+        mySign.initSign(pk);
+        mySign.update(md5);
+        byte[] byteSignedData = mySign.sign();
+        System.out.println("Signature length: " + byteSignedData.length);
+
+        FileOutputStream os = new FileOutputStream(out);
+
+        os.write("<Signature>".getBytes());
+        os.write(byteSignedData);
+        os.write("</Signature>\n".getBytes());
+        os.close();
+    }
+
     /**
     * Encrypts the AES key to a file using an RSA public key
     */
-    private void saveKey(File publicKeyFile, File out, byte[] md5) throws IOException, GeneralSecurityException {
-        if (!out.exists()) {
-            out.createNewFile();
+    private void saveKey(File publicKeyFile, File signatureFile, File aesKeyFile) throws IOException, GeneralSecurityException {
+        if (!aesKeyFile.exists()) {
+            aesKeyFile.createNewFile();
         }
         // read public key to be used to encrypt the AES key
         byte[] encodedKey = new byte[(int)publicKeyFile.length()];
@@ -171,11 +197,18 @@ class Encryptor extends Fcrypt {
 
         // write MD5 and AES key
         rsaCipher.init(Cipher.ENCRYPT_MODE, pk);
-        CipherOutputStream os = new CipherOutputStream(new FileOutputStream(out), rsaCipher);
+        CipherOutputStream os = new CipherOutputStream(new FileOutputStream(aesKeyFile, true), rsaCipher);
         // For later load key tag.
-        os.write("<md5>".getBytes());
-        os.write(md5);
-        os.write("</md5>\n<AES>".getBytes());
+        //
+        // os.write("<md5>".getBytes());
+        // FileInputStream is = new FileInputStream(signatureFile);
+        // byte[] signature = new byte[is.available()];
+        // is.read(signature);
+        // System.out.println("Signature file length: " + signature.length);
+        // os.write(new String(signature).getBytes("UTF-8"));
+        // os.write("</md5>\n".getBytes());
+
+        os.write("<AES>".getBytes());
         os.write(aesKey);
         os.write("</AES>\n".getBytes());
         os.close();
@@ -188,9 +221,10 @@ class Encryptor extends Fcrypt {
 
         FileInputStream is = new FileInputStream(a);
         FileOutputStream os = new FileOutputStream(out);
-        String signature = "<Signature>";
+        // String signature = "<Signature>";
+        System.out.println("AES Key File size: " + a.length());
         os.write(String.valueOf((int) (a.length())).getBytes());
-        os.write(signature.getBytes());
+        // os.write(signature.getBytes());
         copy(is, os);
         is = new FileInputStream(b);
         copy(is, os);
@@ -204,8 +238,10 @@ class Encryptor extends Fcrypt {
             byte[] md5OfFile = getMD5(fileToBeEncrypt);
             makeAESKey();
             encrypt(fileToBeEncrypt, contentsFile, aeskeySpec);
-            saveKey(publicKeyFile, aesKeyFile, md5OfFile);
+            writeSignature(md5OfFile, privateKeyFile, aesKeyFile);
+            saveKey(publicKeyFile, signatureFile, aesKeyFile);
             combineFiles(aesKeyFile, contentsFile, fileEncrypted);
+            signatureFile.delete();
             aesKeyFile.delete();
             contentsFile.delete();
         } catch (NoSuchAlgorithmException e) {
@@ -224,6 +260,7 @@ class Decryptor extends Fcrypt {
     private File privateKeyFile = null;
     private File aesKeyFile = null;
     private File contentsFile = null;
+    private File signatureFile = null;
 
     public Decryptor(File privateKeyFile, File publicKeyFile, File fileToBeDecrypt, File fileDecrypted) {
         this.fileToBeDecrypt = fileToBeDecrypt;
@@ -232,20 +269,28 @@ class Decryptor extends Fcrypt {
         this.publicKeyFile = publicKeyFile;
         this.aesKeyFile = new File("AES_KEY");
         this.contentsFile = new File("CONTENTS");
+        this.signatureFile = new File("SIGNATURE");
     }
 
-    void splitFiles(File in, File outA, File outB) throws FileNotFoundException, IOException {
+    void splitFiles(File in, File signatureFile, File aesKeyFile, File contentsFile) throws FileNotFoundException, IOException {
         FileInputStream is = new FileInputStream(in);
-        byte[] length = new byte[14];
+        byte[] length = new byte[3];
         is.read(length);
         String lengthStr = new String(length);
-        int sigLength = Integer.parseInt(lengthStr.substring(0, lengthStr.indexOf("<Sig")));
+        int sigLength = Integer.parseInt(lengthStr);
         System.out.println(sigLength);
-        byte[] signature = new byte[sigLength];
-        FileOutputStream os = new FileOutputStream(outA);
+
+        FileOutputStream os = new FileOutputStream(signatureFile);
+        byte[] signature = new byte[152];
         is.read(signature);
         os.write(signature);
-        os = new FileOutputStream(outB);
+
+        os = new FileOutputStream(aesKeyFile);
+        byte[] aesKey = new byte[128];
+        is.read(aesKey);
+        os.write(aesKey);
+
+        os = new FileOutputStream(contentsFile);
         int i;
         byte[] b = new byte[1024];
         while ((i = is.read(b)) != -1) {
@@ -253,10 +298,37 @@ class Decryptor extends Fcrypt {
         }
     }
 
+    private void loadSignature(File signatureFile, File fileDecrypted, File publicKeyFile) throws GeneralSecurityException, IOException {
+        byte[] signatureBytes = new byte[(int) signatureFile.length()];
+        new FileInputStream(signatureFile).read(signatureBytes);
+        byte[] receviedSig = getSignature(signatureBytes);
+
+        // read public key to be used to decrypt the signature.
+        byte[] encodedKey = new byte[(int)publicKeyFile.length()];
+        new FileInputStream(publicKeyFile).read(encodedKey);
+
+        // create public key
+        X509EncodedKeySpec publicKeySpec = new X509EncodedKeySpec(encodedKey);
+        KeyFactory kf = KeyFactory.getInstance("RSA");
+        PublicKey pk = kf.generatePublic(publicKeySpec);
+
+        byte[] decryptedFileMD5 = getMD5(fileDecrypted);
+
+        Signature myVerifySign = Signature.getInstance("MD5withRSA");
+        myVerifySign.initVerify(pk);
+        myVerifySign.update(decryptedFileMD5);
+
+        boolean isVerified = myVerifySign.verify(receviedSig);
+        if (isVerified)
+            System.out.println("Signature is verified!");
+        else 
+            System.out.println("Error in validating Signature!");
+    }
+
     /**
     * Decrypts an AES key from a file using an RSA private key
     */
-    private void loadKey(File in, File privateKeyFile) throws GeneralSecurityException, IOException {
+    private void loadKey(File aesKeyFile, File privateKeyFile) throws GeneralSecurityException, IOException {
         // read private key to be used to decrypt the AES key
         byte[] encodedKey = new byte[(int)privateKeyFile.length()];
         new FileInputStream(privateKeyFile).read(encodedKey);
@@ -269,9 +341,8 @@ class Decryptor extends Fcrypt {
         // read AES key
         rsaCipher.init(Cipher.DECRYPT_MODE, pk);
         byte[] contents = new byte[1024];
-        CipherInputStream is = new CipherInputStream(new FileInputStream(in), rsaCipher);
+        CipherInputStream is = new CipherInputStream(new FileInputStream(aesKeyFile), rsaCipher);
         is.read(contents);
-        System.out.println("Get Digest from encrypted file. Digest(in hex format): " + convertByteToHex(getSignature(contents)));
         aesKey = getKey(contents);
         aeskeySpec = new SecretKeySpec(aesKey, "AES");
     }
@@ -301,8 +372,8 @@ class Decryptor extends Fcrypt {
 
     private byte[] getSignature(byte[] signatureAndKey) {
         String contentsString = new String(signatureAndKey);
-        String md5 = contentsString.substring(contentsString.indexOf("<md5>") + 5, contentsString.indexOf("</md5>"));
-        return md5.getBytes();
+        String signature = contentsString.substring(contentsString.indexOf("<Signature>") + 11, contentsString.indexOf("</Signature>"));
+        return signature.getBytes();
     }
 
     private byte[] getKey(byte[] signatureAndKey) {
@@ -312,9 +383,11 @@ class Decryptor extends Fcrypt {
     }
 
     public void startDecrypting() throws IOException, FileNotFoundException, GeneralSecurityException {
-        splitFiles(fileToBeDecrypt, aesKeyFile, contentsFile);
+        splitFiles(fileToBeDecrypt, signatureFile, aesKeyFile, contentsFile);
         loadKey(aesKeyFile, privateKeyFile);
         decrypt(contentsFile, fileDecrypted, aeskeySpec);
+        loadSignature(signatureFile, fileDecrypted, publicKeyFile);
+        signatureFile.delete();
         aesKeyFile.delete();
         contentsFile.delete();
     }
